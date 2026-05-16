@@ -132,7 +132,6 @@ dist
 # Replit debugger
 .breakpoints
 
-# SQLite database (runtime data, not tracked in git)
-bot.db
-bot.db-shm
-bot.db-wal
+# Runtime data files (not tracked in git)
+guild_config.json
+vanity_configs.json

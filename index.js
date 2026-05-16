@@ -1,44 +1,43 @@
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
-const Database = require("better-sqlite3");
+const fs = require("fs");
 const path = require("path");
 
-const db = new Database(path.join(__dirname, "bot.db"));
+const GUILD_CONFIG_FILE = path.join(__dirname, "guild_config.json");
+const VANITY_CONFIG_FILE = path.join(__dirname, "vanity_configs.json");
 
-function initDb() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS guild_config (
-      guild_id TEXT PRIMARY KEY,
-      config_data TEXT NOT NULL DEFAULT '{}'
-    );
-    CREATE TABLE IF NOT EXISTS vanity_configs (
-      guild_id TEXT PRIMARY KEY,
-      configs TEXT NOT NULL DEFAULT '[]'
-    );
-  `);
+function readJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
 }
 
 function getGuildConfig(guildId) {
-  const row = db.prepare("SELECT config_data FROM guild_config WHERE guild_id = ?").get(guildId);
-  try { return JSON.parse(row?.config_data ?? "{}"); } catch { return {}; }
+  const all = readJson(GUILD_CONFIG_FILE, {});
+  return all[guildId] ?? {};
 }
 
 function setGuildConfig(guildId, data) {
-  db.prepare(`
-    INSERT INTO guild_config (guild_id, config_data) VALUES (?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET config_data = excluded.config_data
-  `).run(guildId, JSON.stringify(data));
+  const all = readJson(GUILD_CONFIG_FILE, {});
+  all[guildId] = data;
+  writeJson(GUILD_CONFIG_FILE, all);
 }
 
 function getVanityConfigs(guildId) {
-  const row = db.prepare("SELECT configs FROM vanity_configs WHERE guild_id = ?").get(guildId);
-  try { return JSON.parse(row?.configs ?? "[]"); } catch { return []; }
+  const all = readJson(VANITY_CONFIG_FILE, {});
+  return all[guildId] ?? [];
 }
 
 function setVanityConfigs(guildId, configs) {
-  db.prepare(`
-    INSERT INTO vanity_configs (guild_id, configs) VALUES (?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET configs = excluded.configs
-  `).run(guildId, JSON.stringify(configs));
+  const all = readJson(VANITY_CONFIG_FILE, {});
+  all[guildId] = configs;
+  writeJson(VANITY_CONFIG_FILE, all);
 }
 
 function getTicketBotId(guildId) {
@@ -867,7 +866,6 @@ if (!process.env.DISCORD_TOKEN) {
   process.exit(1);
 }
 
-initDb();
 client.login(process.env.DISCORD_TOKEN).catch(err => {
   console.error("ERROR: Failed to log in to Discord —", err.message);
   process.exit(1);
