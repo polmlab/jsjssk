@@ -1,7 +1,10 @@
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
 const { Pool } = require("pg");
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+});
 
 async function initDb() {
   await pool.query(`
