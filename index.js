@@ -902,13 +902,23 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+if (!process.env.DATABASE_URL) {
+  console.error("ERROR: DATABASE_URL environment variable is not set. Add a PostgreSQL database to your project.");
+  process.exit(1);
+}
+
+if (!process.env.DISCORD_TOKEN) {
+  console.error("ERROR: DISCORD_TOKEN environment variable is not set.");
+  process.exit(1);
+}
+
 initDb()
   .then(() => client.login(process.env.DISCORD_TOKEN))
   .catch(err => {
     if (err.message?.toLowerCase().includes("token")) {
-      console.error("Failed to log in: invalid or missing DISCORD_TOKEN.");
+      console.error("ERROR: Failed to log in to Discord — invalid or missing DISCORD_TOKEN.");
     } else {
-      console.error("Failed to initialize database:", err.message);
+      console.error("ERROR: Failed to initialize database:", err.message);
     }
     process.exit(1);
   });
