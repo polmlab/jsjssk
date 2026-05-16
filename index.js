@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const VANITY_FILE = path.join(__dirname, "vanity.json");
+const CONFIG_FILE = path.join(__dirname, "config.json");
 
 function loadVanity() {
   try {
@@ -14,6 +15,23 @@ function loadVanity() {
 
 function saveVanity(data) {
   fs.writeFileSync(VANITY_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(data) {
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
+}
+
+function getTicketBotId(guildId) {
+  const config = loadConfig();
+  return config[guildId]?.ticketBotId ?? null;
 }
 
 const client = new Client({
@@ -28,7 +46,6 @@ const client = new Client({
 });
 
 const PREFIX = "$";
-const TICKET_BOT_ID = "718493970652594217";
 const DEV_ID = "1265799891607879853";
 const STAFF_ROLES = ["1503067696017834124", "1503068138080829440"];
 const LOG_CHANNEL_ID = "1478979915851235361";
@@ -213,10 +230,57 @@ client.on("messageCreate", async (message) => {
     }
   }
 
+  // ── $setup ─────────────────────────────────────────────────────────────────
+  if (command === "setup") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return message.reply("you need the **Manage Server** permission to use this.");
+    }
+
+    const input = args[0];
+    if (!input) {
+      const currentId = getTicketBotId(message.guild.id);
+      const current = currentId
+        ? `Currently configured ticket bot: <@${currentId}> (\`${currentId}\`)`
+        : "No ticket bot configured yet.";
+      return message.reply(
+        `${current}\n\nUsage: \`$setup <bot ID or @mention>\` — set the ticket bot for this server.`
+      );
+    }
+
+    const mentionMatch = input.match(/^<@!?(\d+)>$/);
+    const botId = mentionMatch ? mentionMatch[1] : input;
+
+    if (!/^\d{17,20}$/.test(botId)) {
+      return message.reply("invalid bot ID. Please provide a valid Discord user/bot ID or mention.");
+    }
+
+    const config = loadConfig();
+    if (!config[message.guild.id]) config[message.guild.id] = {};
+    config[message.guild.id].ticketBotId = botId;
+    saveConfig(config);
+
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("✅ Ticket Bot Configured")
+          .setDescription(`Ticket bot set to <@${botId}> (\`${botId}\`) for this server.`)
+          .setColor(0x57f287)
+          .setFooter({ text: "All ticket commands will now use this bot to identify tickets." })
+          .setTimestamp()
+      ]
+    });
+  }
+
   // ── $rn ────────────────────────────────────────────────────────────────────
   if (command === "rn") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
-    const isTicket = message.channel.permissionOverwrites?.cache.has(TICKET_BOT_ID);
+
+    const ticketBotId = getTicketBotId(message.guild.id);
+    if (!ticketBotId) {
+      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+    }
+
+    const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) {
       return message.reply("not a ticket.");
     }
@@ -253,7 +317,13 @@ client.on("messageCreate", async (message) => {
   // ── $close ─────────────────────────────────────────────────────────────────
   if (command === "close") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
-    const isTicket = message.channel.permissionOverwrites?.cache.has(TICKET_BOT_ID);
+
+    const ticketBotId = getTicketBotId(message.guild.id);
+    if (!ticketBotId) {
+      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+    }
+
+    const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
     const ticketName = message.channel.name;
@@ -283,7 +353,13 @@ client.on("messageCreate", async (message) => {
   // ── $remind ────────────────────────────────────────────────────────────────
   if (command === "remind") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
-    const isTicket = message.channel.permissionOverwrites?.cache.has(TICKET_BOT_ID);
+
+    const ticketBotId = getTicketBotId(message.guild.id);
+    if (!ticketBotId) {
+      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+    }
+
+    const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
     const target = message.mentions.users.first()
@@ -305,7 +381,13 @@ client.on("messageCreate", async (message) => {
   // ── $proof ─────────────────────────────────────────────────────────────────
   if (command === "proof") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
-    const isTicket = message.channel.permissionOverwrites?.cache.has(TICKET_BOT_ID);
+
+    const ticketBotId = getTicketBotId(message.guild.id);
+    if (!ticketBotId) {
+      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+    }
+
+    const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
     const embed = new EmbedBuilder()
@@ -322,7 +404,13 @@ client.on("messageCreate", async (message) => {
   // ── $wait ──────────────────────────────────────────────────────────────────
   if (command === "wait") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
-    const isTicket = message.channel.permissionOverwrites?.cache.has(TICKET_BOT_ID);
+
+    const ticketBotId = getTicketBotId(message.guild.id);
+    if (!ticketBotId) {
+      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+    }
+
+    const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
     const embed = new EmbedBuilder()
@@ -362,6 +450,7 @@ client.on("messageCreate", async (message) => {
         {
           name: "⚙️ Admin",
           value: [
+            "`$setup <bot ID>`",
             "`$clearinvites`",
             "`$vanitysetup`",
             "`$vanitylist`",
@@ -387,8 +476,13 @@ client.on("messageCreate", async (message) => {
 
   // ── $ticketcount ───────────────────────────────────────────────────────────
   if (command === "ticketcount") {
+    const ticketBotId = getTicketBotId(message.guild.id);
+    if (!ticketBotId) {
+      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+    }
+
     const ticketChannels = message.guild.channels.cache.filter(
-      c => c.permissionOverwrites?.cache.has(TICKET_BOT_ID)
+      c => c.permissionOverwrites?.cache.has(ticketBotId)
     );
     const count = ticketChannels.size;
 
