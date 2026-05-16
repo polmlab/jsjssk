@@ -39,6 +39,12 @@ function getPrefix(guildId) {
   return config[guildId]?.prefix ?? DEFAULT_PREFIX;
 }
 
+function getStaffRoles(guildId) {
+  const config = loadConfig();
+  const configured = config[guildId]?.staffRoles;
+  return configured && configured.length > 0 ? configured : STAFF_ROLES;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -56,7 +62,7 @@ const STAFF_ROLES = ["1503067696017834124", "1503068138080829440"];
 const LOG_CHANNEL_ID = "1478979915851235361";
 
 function isStaff(member) {
-  return STAFF_ROLES.some(id => member.roles.cache.has(id));
+  return getStaffRoles(member.guild.id).some(id => member.roles.cache.has(id));
 }
 
 client.once("clientReady", async () => {
@@ -234,6 +240,109 @@ client.on("messageCreate", async (message) => {
       console.error(err);
       message.reply("something went wrong while deleting invites.");
     }
+  }
+
+  // ── $staffroles ────────────────────────────────────────────────────────────
+  if (command === "staffroles") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return message.reply("you need the **Manage Server** permission to use this.");
+    }
+
+    const sub = args[0]?.toLowerCase();
+    const config = loadConfig();
+    if (!config[message.guild.id]) config[message.guild.id] = {};
+    const current = config[message.guild.id].staffRoles ?? [];
+
+    if (!sub || sub === "list") {
+      if (current.length === 0) {
+        return message.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🛡️ Staff Roles")
+              .setDescription(`No custom staff roles configured — using the default built-in roles.\nUse \`${prefix}staffroles add @role\` to add roles.`)
+              .setColor(0x5865f2)
+          ]
+        });
+      }
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🛡️ Staff Roles")
+            .setDescription(current.map(id => `<@&${id}>`).join("\n"))
+            .setColor(0x5865f2)
+            .setFooter({ text: `${current.length} role(s) configured` })
+        ]
+      });
+    }
+
+    if (sub === "add") {
+      const mentioned = [...message.content.matchAll(/<@&(\d+)>/g)].map(m => m[1]);
+      if (mentioned.length === 0) return message.reply("please mention at least one role to add.");
+
+      const added = [];
+      for (const id of mentioned) {
+        if (!current.includes(id)) {
+          current.push(id);
+          added.push(id);
+        }
+      }
+
+      config[message.guild.id].staffRoles = current;
+      saveConfig(config);
+
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Staff Roles Updated")
+            .setDescription(
+              added.length > 0
+                ? `Added: ${added.map(id => `<@&${id}>`).join(", ")}`
+                : "Those roles were already in the list."
+            )
+            .setColor(0x57f287)
+        ]
+      });
+    }
+
+    if (sub === "remove") {
+      const mentioned = [...message.content.matchAll(/<@&(\d+)>/g)].map(m => m[1]);
+      if (mentioned.length === 0) return message.reply("please mention at least one role to remove.");
+
+      const before = current.length;
+      const updated = current.filter(id => !mentioned.includes(id));
+      const removedCount = before - updated.length;
+
+      config[message.guild.id].staffRoles = updated;
+      saveConfig(config);
+
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Staff Roles Updated")
+            .setDescription(
+              removedCount > 0
+                ? `Removed ${removedCount} role(s). ${updated.length === 0 ? "No custom roles remain — falling back to defaults." : `Remaining: ${updated.map(id => `<@&${id}>`).join(", ")}`}`
+                : "None of those roles were in the list."
+            )
+            .setColor(0x57f287)
+        ]
+      });
+    }
+
+    if (sub === "clear") {
+      config[message.guild.id].staffRoles = [];
+      saveConfig(config);
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Staff Roles Cleared")
+            .setDescription("All custom staff roles removed. Falling back to the default built-in roles.")
+            .setColor(0x57f287)
+        ]
+      });
+    }
+
+    return message.reply(`unknown subcommand. Usage:\n\`${prefix}staffroles list\` — view current roles\n\`${prefix}staffroles add @role\` — add a role\n\`${prefix}staffroles remove @role\` — remove a role\n\`${prefix}staffroles clear\` — reset to defaults`);
   }
 
   // ── $prefix ────────────────────────────────────────────────────────────────
@@ -494,6 +603,7 @@ client.on("messageCreate", async (message) => {
           value: [
             `\`${prefix}prefix <prefix>\` — change the bot prefix for this server`,
             `\`${prefix}setup <bot ID>\` — set which ticket bot is used on this server`,
+            `\`${prefix}staffroles <add|remove|list|clear>\` — manage which roles can use ticket commands`,
             `\`${prefix}clearinvites\` — delete all active server invites`,
             `\`${prefix}vanitysetup\` — set up a vanity status role reward`,
             `\`${prefix}vanitylist\` — view all vanity role configs`,
