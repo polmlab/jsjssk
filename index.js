@@ -45,6 +45,11 @@ function getStaffRoles(guildId) {
   return configured && configured.length > 0 ? configured : STAFF_ROLES;
 }
 
+function getVouchChannel(guildId) {
+  const config = loadConfig();
+  return config[guildId]?.vouchChannelId ?? null;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -144,10 +149,16 @@ client.on("messageCreate", async (message) => {
   // ── $vouch ─────────────────────────────────────────────────────────────────
   if (command === "vouch") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+
+    const vouchChannelId = getVouchChannel(message.guild.id);
+    if (!vouchChannelId) {
+      return message.reply(`no vouch channel configured for this server. An admin must run \`${prefix}vouchchannel <#channel>\` first.`);
+    }
+
     const embed = new EmbedBuilder()
       .setTitle("Vouch Us!")
       .setDescription(
-        `➡️ Please type: **vouch ${message.author} ${args.join(" ")}** in <#1487260542526820423> to support us and show others that we are legit!`
+        `➡️ Please type: **vouch ${message.author} ${args.join(" ")}** in <#${vouchChannelId}> to support us and show others that we are legit!`
       )
       .setColor(0x5865f2);
 
@@ -240,6 +251,50 @@ client.on("messageCreate", async (message) => {
       console.error(err);
       message.reply("something went wrong while deleting invites.");
     }
+  }
+
+  // ── $vouchchannel ──────────────────────────────────────────────────────────
+  if (command === "vouchchannel") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return message.reply("you need the **Manage Server** permission to use this.");
+    }
+
+    const input = args[0];
+    if (!input) {
+      const currentId = getVouchChannel(message.guild.id);
+      const current = currentId
+        ? `Currently configured vouch channel: <#${currentId}>`
+        : "No vouch channel configured yet.";
+      return message.reply(`${current}\n\nUsage: \`${prefix}vouchchannel <#channel>\` — set the vouch channel for this server.`);
+    }
+
+    const mentionMatch = input.match(/^<#(\d+)>$/);
+    const channelId = mentionMatch ? mentionMatch[1] : input;
+
+    if (!/^\d{17,20}$/.test(channelId)) {
+      return message.reply("invalid channel. Please mention a channel or provide a valid channel ID.");
+    }
+
+    const target = message.guild.channels.cache.get(channelId);
+    if (!target) {
+      return message.reply("couldn't find that channel in this server.");
+    }
+
+    const config = loadConfig();
+    if (!config[message.guild.id]) config[message.guild.id] = {};
+    config[message.guild.id].vouchChannelId = channelId;
+    saveConfig(config);
+
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("✅ Vouch Channel Set")
+          .setDescription(`Vouch channel set to <#${channelId}> for this server.`)
+          .setColor(0x57f287)
+          .setFooter({ text: "This channel will be used in $vouch and $wait messages." })
+          .setTimestamp()
+      ]
+    });
   }
 
   // ── $staffroles ────────────────────────────────────────────────────────────
@@ -564,11 +619,14 @@ client.on("messageCreate", async (message) => {
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
+    const vouchChannelId = getVouchChannel(message.guild.id);
+    const vouchRef = vouchChannelId ? `<#${vouchChannelId}>` : "the vouch channel";
+
     const embed = new EmbedBuilder()
       .setDescription(
         "➡️ We are trying our best to pay the rewards fast. There are other people claiming before you.\n\n" +
         "🤝 What we're asking you:\n" +
-        "**1.**: Wait patiently for your reward, you will be paid (check <#1487260542526820423>)\n" +
+        `**1.**: Wait patiently for your reward, you will be paid (check ${vouchRef})\n` +
         "**2.**: Please don't spam ping the staff team, pinging them will not make the payment faster.\n" +
         "**3.**: Stay polite in tickets."
       )
@@ -603,6 +661,7 @@ client.on("messageCreate", async (message) => {
           value: [
             `\`${prefix}prefix <prefix>\` — change the bot prefix for this server`,
             `\`${prefix}setup <bot ID>\` — set which ticket bot is used on this server`,
+            `\`${prefix}vouchchannel <#channel>\` — set the channel used in vouch and wait messages`,
             `\`${prefix}staffroles <add|remove|list|clear>\` — manage which roles can use ticket commands`,
             `\`${prefix}clearinvites\` — delete all active server invites`,
             `\`${prefix}vanitysetup\` — set up a vanity status role reward`,
