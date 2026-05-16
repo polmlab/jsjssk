@@ -1,80 +1,65 @@
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
-const { Pool } = require("pg");
+const Database = require("better-sqlite3");
+const path = require("path");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
-});
+const db = new Database(path.join(__dirname, "bot.db"));
 
-async function initDb() {
-  await pool.query(`
+function initDb() {
+  db.exec(`
     CREATE TABLE IF NOT EXISTS guild_config (
       guild_id TEXT PRIMARY KEY,
-      config_data JSONB NOT NULL DEFAULT '{}'
+      config_data TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS vanity_configs (
       guild_id TEXT PRIMARY KEY,
-      configs JSONB NOT NULL DEFAULT '[]'
+      configs TEXT NOT NULL DEFAULT '[]'
     );
   `);
 }
 
-async function getGuildConfig(guildId) {
-  const res = await pool.query(
-    "SELECT config_data FROM guild_config WHERE guild_id = $1",
-    [guildId]
-  );
-  return res.rows[0]?.config_data ?? {};
+function getGuildConfig(guildId) {
+  const row = db.prepare("SELECT config_data FROM guild_config WHERE guild_id = ?").get(guildId);
+  try { return JSON.parse(row?.config_data ?? "{}"); } catch { return {}; }
 }
 
-async function setGuildConfig(guildId, data) {
-  await pool.query(
-    `INSERT INTO guild_config (guild_id, config_data) VALUES ($1, $2)
-     ON CONFLICT (guild_id) DO UPDATE SET config_data = $2`,
-    [guildId, data]
-  );
+function setGuildConfig(guildId, data) {
+  db.prepare(`
+    INSERT INTO guild_config (guild_id, config_data) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET config_data = excluded.config_data
+  `).run(guildId, JSON.stringify(data));
 }
 
-async function getVanityConfigs(guildId) {
-  const res = await pool.query(
-    "SELECT configs FROM vanity_configs WHERE guild_id = $1",
-    [guildId]
-  );
-  return res.rows[0]?.configs ?? [];
+function getVanityConfigs(guildId) {
+  const row = db.prepare("SELECT configs FROM vanity_configs WHERE guild_id = ?").get(guildId);
+  try { return JSON.parse(row?.configs ?? "[]"); } catch { return []; }
 }
 
-async function setVanityConfigs(guildId, configs) {
-  await pool.query(
-    `INSERT INTO vanity_configs (guild_id, configs) VALUES ($1, $2)
-     ON CONFLICT (guild_id) DO UPDATE SET configs = $2`,
-    [guildId, JSON.stringify(configs)]
-  );
+function setVanityConfigs(guildId, configs) {
+  db.prepare(`
+    INSERT INTO vanity_configs (guild_id, configs) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET configs = excluded.configs
+  `).run(guildId, JSON.stringify(configs));
 }
 
-async function getTicketBotId(guildId) {
-  const config = await getGuildConfig(guildId);
-  return config.ticketBotId ?? null;
+function getTicketBotId(guildId) {
+  return getGuildConfig(guildId).ticketBotId ?? null;
 }
 
-async function getPrefix(guildId) {
-  const config = await getGuildConfig(guildId);
-  return config.prefix ?? DEFAULT_PREFIX;
+function getPrefix(guildId) {
+  return getGuildConfig(guildId).prefix ?? DEFAULT_PREFIX;
 }
 
-async function getStaffRoles(guildId) {
-  const config = await getGuildConfig(guildId);
-  const configured = config.staffRoles;
+function getStaffRoles(guildId) {
+  const configured = getGuildConfig(guildId).staffRoles;
   return configured && configured.length > 0 ? configured : STAFF_ROLES;
 }
 
-async function getVouchChannel(guildId) {
-  const config = await getGuildConfig(guildId);
-  return config.vouchChannelId ?? null;
+function getVouchChannel(guildId) {
+  return getGuildConfig(guildId).vouchChannelId ?? null;
 }
 
-async function isStaff(member) {
-  const roles = await getStaffRoles(member.guild.id);
-  return roles.some(id => member.roles.cache.has(id));
+function isStaff(member) {
+  return getStaffRoles(member.guild.id).some(id => member.roles.cache.has(id));
 }
 
 const client = new Client({
@@ -111,7 +96,7 @@ client.on("presenceUpdate", async (oldPresence, newPresence) => {
     const member = await guild.members.fetch(newPresence.userId).catch(() => null);
     if (!member || member.user.bot) return;
 
-    const configs = await getVanityConfigs(guild.id);
+    const configs = getVanityConfigs(guild.id);
     if (!configs || configs.length === 0) return;
 
     const customActivity = newPresence.activities?.find(a => a.type === 4);
@@ -155,7 +140,7 @@ async function ask(channel, userId, question, timeout = 60000) {
 
 // ─── Message handler ──────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
-  const prefix = message.guild ? await getPrefix(message.guild.id) : DEFAULT_PREFIX;
+  const prefix = message.guild ? getPrefix(message.guild.id) : DEFAULT_PREFIX;
   if (message.author.bot || !message.content.startsWith(prefix)) return;
 
   const args = message.content.slice(prefix.length).trim().split(/ +/);
@@ -170,9 +155,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $vouch ─────────────────────────────────────────────────────────────────
   if (command === "vouch") {
-    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const vouchChannelId = await getVouchChannel(message.guild.id);
+    const vouchChannelId = getVouchChannel(message.guild.id);
     if (!vouchChannelId) {
       return message.reply(`no vouch channel configured for this server. An admin must run \`${prefix}vouchchannel <#channel>\` first.`);
     }
@@ -283,7 +268,7 @@ client.on("messageCreate", async (message) => {
 
     const input = args[0];
     if (!input) {
-      const currentId = await getVouchChannel(message.guild.id);
+      const currentId = getVouchChannel(message.guild.id);
       const current = currentId
         ? `Currently configured vouch channel: <#${currentId}>`
         : "No vouch channel configured yet.";
@@ -302,9 +287,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("couldn't find that channel in this server.");
     }
 
-    const guildConfig = await getGuildConfig(message.guild.id);
+    const guildConfig = getGuildConfig(message.guild.id);
     guildConfig.vouchChannelId = channelId;
-    await setGuildConfig(message.guild.id, guildConfig);
+    setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
@@ -325,7 +310,7 @@ client.on("messageCreate", async (message) => {
     }
 
     const sub = args[0]?.toLowerCase();
-    const guildConfig = await getGuildConfig(message.guild.id);
+    const guildConfig = getGuildConfig(message.guild.id);
     const current = guildConfig.staffRoles ?? [];
 
     if (!sub || sub === "list") {
@@ -356,24 +341,17 @@ client.on("messageCreate", async (message) => {
 
       const added = [];
       for (const id of mentioned) {
-        if (!current.includes(id)) {
-          current.push(id);
-          added.push(id);
-        }
+        if (!current.includes(id)) { current.push(id); added.push(id); }
       }
 
       guildConfig.staffRoles = current;
-      await setGuildConfig(message.guild.id, guildConfig);
+      setGuildConfig(message.guild.id, guildConfig);
 
       return message.reply({
         embeds: [
           new EmbedBuilder()
             .setTitle("✅ Staff Roles Updated")
-            .setDescription(
-              added.length > 0
-                ? `Added: ${added.map(id => `<@&${id}>`).join(", ")}`
-                : "Those roles were already in the list."
-            )
+            .setDescription(added.length > 0 ? `Added: ${added.map(id => `<@&${id}>`).join(", ")}` : "Those roles were already in the list.")
             .setColor(0x57f287)
         ]
       });
@@ -388,7 +366,7 @@ client.on("messageCreate", async (message) => {
       const removedCount = before - updated.length;
 
       guildConfig.staffRoles = updated;
-      await setGuildConfig(message.guild.id, guildConfig);
+      setGuildConfig(message.guild.id, guildConfig);
 
       return message.reply({
         embeds: [
@@ -406,7 +384,7 @@ client.on("messageCreate", async (message) => {
 
     if (sub === "clear") {
       guildConfig.staffRoles = [];
-      await setGuildConfig(message.guild.id, guildConfig);
+      setGuildConfig(message.guild.id, guildConfig);
       return message.reply({
         embeds: [
           new EmbedBuilder()
@@ -431,17 +409,12 @@ client.on("messageCreate", async (message) => {
       return message.reply(`the current prefix for this server is \`${prefix}\`. Use \`${prefix}prefix <new prefix>\` to change it.`);
     }
 
-    if (newPrefix.length > 5) {
-      return message.reply("prefix must be 5 characters or fewer.");
-    }
+    if (newPrefix.length > 5) return message.reply("prefix must be 5 characters or fewer.");
+    if (/\s/.test(newPrefix)) return message.reply("prefix cannot contain spaces.");
 
-    if (/\s/.test(newPrefix)) {
-      return message.reply("prefix cannot contain spaces.");
-    }
-
-    const guildConfig = await getGuildConfig(message.guild.id);
+    const guildConfig = getGuildConfig(message.guild.id);
     guildConfig.prefix = newPrefix;
-    await setGuildConfig(message.guild.id, guildConfig);
+    setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
@@ -463,13 +436,11 @@ client.on("messageCreate", async (message) => {
 
     const input = args[0];
     if (!input) {
-      const currentId = await getTicketBotId(message.guild.id);
+      const currentId = getTicketBotId(message.guild.id);
       const current = currentId
         ? `Currently configured ticket bot: <@${currentId}> (\`${currentId}\`)`
         : "No ticket bot configured yet.";
-      return message.reply(
-        `${current}\n\nUsage: \`${prefix}setup <bot ID or @mention>\` — set the ticket bot for this server.`
-      );
+      return message.reply(`${current}\n\nUsage: \`${prefix}setup <bot ID or @mention>\` — set the ticket bot for this server.`);
     }
 
     const mentionMatch = input.match(/^<@!?(\d+)>$/);
@@ -479,9 +450,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("invalid bot ID. Please provide a valid Discord user/bot ID or mention.");
     }
 
-    const guildConfig = await getGuildConfig(message.guild.id);
+    const guildConfig = getGuildConfig(message.guild.id);
     guildConfig.ticketBotId = botId;
-    await setGuildConfig(message.guild.id, guildConfig);
+    setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
@@ -497,22 +468,18 @@ client.on("messageCreate", async (message) => {
 
   // ── $rn ────────────────────────────────────────────────────────────────────
   if (command === "rn") {
-    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = await getTicketBotId(message.guild.id);
+    const ticketBotId = getTicketBotId(message.guild.id);
     if (!ticketBotId) {
       return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
-    if (!isTicket) {
-      return message.reply("not a ticket.");
-    }
+    if (!isTicket) return message.reply("not a ticket.");
 
     const newName = args.join("-").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
-    if (!newName) {
-      return message.reply("please provide a valid ticket name (letters, numbers, hyphens only).");
-    }
+    if (!newName) return message.reply("please provide a valid ticket name (letters, numbers, hyphens only).");
 
     try {
       const oldName = message.channel.name;
@@ -540,9 +507,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $close ─────────────────────────────────────────────────────────────────
   if (command === "close") {
-    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = await getTicketBotId(message.guild.id);
+    const ticketBotId = getTicketBotId(message.guild.id);
     if (!ticketBotId) {
       return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
@@ -576,9 +543,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $remind ────────────────────────────────────────────────────────────────
   if (command === "remind") {
-    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = await getTicketBotId(message.guild.id);
+    const ticketBotId = getTicketBotId(message.guild.id);
     if (!ticketBotId) {
       return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
@@ -604,9 +571,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $proof ─────────────────────────────────────────────────────────────────
   if (command === "proof") {
-    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = await getTicketBotId(message.guild.id);
+    const ticketBotId = getTicketBotId(message.guild.id);
     if (!ticketBotId) {
       return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
@@ -627,9 +594,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $wait ──────────────────────────────────────────────────────────────────
   if (command === "wait") {
-    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = await getTicketBotId(message.guild.id);
+    const ticketBotId = getTicketBotId(message.guild.id);
     if (!ticketBotId) {
       return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
@@ -637,7 +604,7 @@ client.on("messageCreate", async (message) => {
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
-    const vouchChannelId = await getVouchChannel(message.guild.id);
+    const vouchChannelId = getVouchChannel(message.guild.id);
     const vouchRef = vouchChannelId ? `<#${vouchChannelId}>` : "the vouch channel";
 
     const embed = new EmbedBuilder()
@@ -706,7 +673,7 @@ client.on("messageCreate", async (message) => {
 
   // ── $ticketcount ───────────────────────────────────────────────────────────
   if (command === "ticketcount") {
-    const ticketBotId = await getTicketBotId(message.guild.id);
+    const ticketBotId = getTicketBotId(message.guild.id);
     if (!ticketBotId) {
       return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
@@ -778,36 +745,30 @@ client.on("messageCreate", async (message) => {
         .setColor(0x5865f2)
     ]});
 
-    const textMsg = await ask(
-      ch, userId,
+    const textMsg = await ask(ch, userId,
       "**Step 1/3 — Status text(s)**\nWhat text(s) should be in the member's custom status? " +
       "Separate multiple values with a comma.\n> Example: `discord.gg/myserver, .gg/myserver`"
     );
-    if (!textMsg || textMsg.content.toLowerCase() === "cancel")
-      return ch.send("❌ Setup cancelled.");
+    if (!textMsg || textMsg.content.toLowerCase() === "cancel") return ch.send("❌ Setup cancelled.");
 
     const texts = textMsg.content.split(",").map(t => t.trim()).filter(Boolean);
     if (texts.length === 0) return ch.send("❌ No valid texts provided. Setup cancelled.");
 
-    const matchMsg = await ask(
-      ch, userId,
+    const matchMsg = await ask(ch, userId,
       "**Step 2/3 — Match type**\nShould the status **contain** the text, or must it be an **exact** match?\n" +
       "Reply with `contains` or `exact`."
     );
-    if (!matchMsg || matchMsg.content.toLowerCase() === "cancel")
-      return ch.send("❌ Setup cancelled.");
+    if (!matchMsg || matchMsg.content.toLowerCase() === "cancel") return ch.send("❌ Setup cancelled.");
 
     const matchType = matchMsg.content.toLowerCase().trim();
     if (!["contains", "exact"].includes(matchType))
       return ch.send("❌ Invalid match type. Please reply with `contains` or `exact`. Setup cancelled.");
 
-    const roleMsg = await ask(
-      ch, userId,
+    const roleMsg = await ask(ch, userId,
       "**Step 3/3 — Role(s) to give**\nMention the role(s) to assign when the status matches. " +
       "You can mention multiple roles.\n> Example: `@VanityRep @Advertiser`"
     );
-    if (!roleMsg || roleMsg.content.toLowerCase() === "cancel")
-      return ch.send("❌ Setup cancelled.");
+    if (!roleMsg || roleMsg.content.toLowerCase() === "cancel") return ch.send("❌ Setup cancelled.");
 
     const roleIds = [...roleMsg.content.matchAll(/<@&(\d+)>/g)].map(m => m[1]);
     if (roleIds.length === 0)
@@ -828,25 +789,25 @@ client.on("messageCreate", async (message) => {
     if (validRoles.length === 0)
       return ch.send("❌ None of the roles could be managed by the bot. Make sure the bot's role is above the target roles.");
 
-    const configs = await getVanityConfigs(message.guild.id);
+    const configs = getVanityConfigs(message.guild.id);
     configs.push({ texts, matchType, roles: validRoles });
-    await setVanityConfigs(message.guild.id, configs);
+    setVanityConfigs(message.guild.id, configs);
 
     const roleNames = validRoles.map(id => `<@&${id}>`).join(", ");
     const textList = texts.map(t => `\`${t}\``).join(", ");
 
-    const confirmEmbed = new EmbedBuilder()
-      .setTitle("✅ Vanity Role Setup Complete")
-      .setColor(0x57f287)
-      .addFields(
-        { name: "Status Text(s)", value: textList, inline: false },
-        { name: "Match Type", value: matchType === "contains" ? "Status **contains** the text" : "Status must **exactly** match", inline: false },
-        { name: "Role(s) to Give", value: roleNames, inline: false }
-      )
-      .setFooter({ text: invalidRoles.length > 0 ? `Skipped: ${invalidRoles.join(", ")}` : "All roles configured successfully." })
-      .setTimestamp();
-
-    ch.send({ embeds: [confirmEmbed] });
+    ch.send({ embeds: [
+      new EmbedBuilder()
+        .setTitle("✅ Vanity Role Setup Complete")
+        .setColor(0x57f287)
+        .addFields(
+          { name: "Status Text(s)", value: textList, inline: false },
+          { name: "Match Type", value: matchType === "contains" ? "Status **contains** the text" : "Status must **exactly** match", inline: false },
+          { name: "Role(s) to Give", value: roleNames, inline: false }
+        )
+        .setFooter({ text: invalidRoles.length > 0 ? `Skipped: ${invalidRoles.join(", ")}` : "All roles configured successfully." })
+        .setTimestamp()
+    ]});
   }
 
   // ── $vanitylist ────────────────────────────────────────────────────────────
@@ -855,7 +816,7 @@ client.on("messageCreate", async (message) => {
       return message.reply("you need the **Manage Roles** permission to use this.");
     }
 
-    const configs = await getVanityConfigs(message.guild.id);
+    const configs = getVanityConfigs(message.guild.id);
 
     if (!configs || configs.length === 0)
       return message.reply(`no vanity configs set up for this server. Use \`${prefix}vanitysetup\` to create one.`);
@@ -886,7 +847,7 @@ client.on("messageCreate", async (message) => {
     }
 
     const index = parseInt(args[0], 10) - 1;
-    const configs = await getVanityConfigs(message.guild.id);
+    const configs = getVanityConfigs(message.guild.id);
 
     if (!configs || configs.length === 0)
       return message.reply("no vanity configs to remove.");
@@ -895,30 +856,20 @@ client.on("messageCreate", async (message) => {
       return message.reply(`please provide a valid config number between 1 and ${configs.length}. Use \`${prefix}vanitylist\` to see them.`);
 
     const removed = configs.splice(index, 1)[0];
-    await setVanityConfigs(message.guild.id, configs);
+    setVanityConfigs(message.guild.id, configs);
 
     const textList = removed.texts.map(t => `\`${t}\``).join(", ");
     message.reply(`✅ Removed config #${index + 1} (${textList}).`);
   }
 });
 
-if (!process.env.DATABASE_URL) {
-  console.error("ERROR: DATABASE_URL environment variable is not set. Add a PostgreSQL database to your project.");
-  process.exit(1);
-}
-
 if (!process.env.DISCORD_TOKEN) {
   console.error("ERROR: DISCORD_TOKEN environment variable is not set.");
   process.exit(1);
 }
 
-initDb()
-  .then(() => client.login(process.env.DISCORD_TOKEN))
-  .catch(err => {
-    if (err.message?.toLowerCase().includes("token")) {
-      console.error("ERROR: Failed to log in to Discord — invalid or missing DISCORD_TOKEN.");
-    } else {
-      console.error("ERROR: Failed to initialize database:", err.message);
-    }
-    process.exit(1);
-  });
+initDb();
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+  console.error("ERROR: Failed to log in to Discord —", err.message);
+  process.exit(1);
+});
