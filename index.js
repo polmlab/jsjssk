@@ -902,6 +902,10 @@ client.on("messageCreate", async (message) => {
 initDb()
   .then(() => client.login(process.env.DISCORD_TOKEN))
   .catch(err => {
-    console.error("Failed to initialize database:", err.message);
+    if (err.message?.toLowerCase().includes("token")) {
+      console.error("Failed to log in: invalid or missing DISCORD_TOKEN.");
+    } else {
+      console.error("Failed to initialize database:", err.message);
+    }
     process.exit(1);
   });
