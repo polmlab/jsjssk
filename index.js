@@ -55,8 +55,7 @@ function getStaffRoles(guildId) {
 }
 
 function getVouchChannel(guildId) {
-  const cfg = getGuildConfig(guildId);
-  return cfg.vouchChannelUrl ?? null;
+  return getGuildConfig(guildId).vouchChannelId ?? null;
 }
 
 function isStaff(member) {
@@ -158,15 +157,15 @@ client.on("messageCreate", async (message) => {
   if (command === "vouch") {
     if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const vouchUrl = getVouchChannel(message.guild.id);
-    if (!vouchUrl) {
+    const vouchChannelId = getVouchChannel(message.guild.id);
+    if (!vouchChannelId) {
       return message.reply(`no vouch channel configured for this server. An admin must run \`${prefix}vouchchannel <#channel>\` first.`);
     }
 
     const embed = new EmbedBuilder()
       .setTitle("Vouch Us!")
       .setDescription(
-        `➡️ Please type: **vouch ${message.author} ${args.join(" ")}** in ${vouchUrl} to support us and show others that we are legit!`
+        `➡️ Please type: **vouch ${message.author} ${args.join(" ")}** in <#${vouchChannelId}> to support us and show others that we are legit!`
       )
       .setColor(0x5865f2);
 
@@ -269,48 +268,33 @@ client.on("messageCreate", async (message) => {
 
     const input = args[0];
     if (!input) {
-      const currentUrl = getVouchChannel(message.guild.id);
-      const current = currentUrl
-        ? `Currently configured vouch channel: ${currentUrl}`
+      const currentId = getVouchChannel(message.guild.id);
+      const current = currentId
+        ? `Currently configured vouch channel: <#${currentId}>`
         : "No vouch channel configured yet.";
       return message.reply(
         `${current}\n\nUsage:\n` +
         `• Same server: \`${prefix}vouchchannel #channel\`\n` +
-        `• Another server: \`${prefix}vouchchannel https://discord.com/channels/SERVER_ID/CHANNEL_ID\``
+        `• Another server: \`${prefix}vouchchannel <channel ID>\``
       );
     }
 
-    let vouchUrl = null;
+    const mentionMatch = input.match(/^<#(\d+)>$/);
+    const channelId = mentionMatch ? mentionMatch[1] : (/^\d{17,20}$/.test(input) ? input : null);
 
-    const discordUrlMatch = input.match(/^https:\/\/discord(?:app)?\.com\/channels\/(\d+)\/(\d+)$/);
-    if (discordUrlMatch) {
-      vouchUrl = input;
-    } else {
-      const mentionMatch = input.match(/^<#(\d+)>$/);
-      const channelId = mentionMatch ? mentionMatch[1] : (/^\d{17,20}$/.test(input) ? input : null);
-
-      if (!channelId) {
-        return message.reply(
-          "invalid input. Use a channel mention, a channel ID, or a full Discord channel URL.\n" +
-          `Example: \`${prefix}vouchchannel https://discord.com/channels/123456789/987654321\``
-        );
-      }
-
-      const target = message.guild.channels.cache.get(channelId);
-      if (!target) return message.reply("couldn't find that channel in this server. For channels in other servers, use the full Discord URL.");
-
-      vouchUrl = `https://discord.com/channels/${message.guild.id}/${channelId}`;
+    if (!channelId) {
+      return message.reply("invalid input. Use a channel mention or a channel ID.");
     }
 
     const guildConfig = getGuildConfig(message.guild.id);
-    guildConfig.vouchChannelUrl = vouchUrl;
+    guildConfig.vouchChannelId = channelId;
     setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
         new EmbedBuilder()
           .setTitle("✅ Vouch Channel Set")
-          .setDescription(`Vouch channel set to ${vouchUrl}`)
+          .setDescription(`Vouch channel set to <#${channelId}> for this server.`)
           .setColor(0x57f287)
           .setFooter({ text: "This channel will be used in vouch and wait messages." })
           .setTimestamp()
@@ -619,7 +603,8 @@ client.on("messageCreate", async (message) => {
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
-    const vouchRef = getVouchChannel(message.guild.id) ?? "the vouch channel";
+    const vouchId = getVouchChannel(message.guild.id);
+    const vouchRef = vouchId ? `<#${vouchId}>` : "the vouch channel";
 
     const embed = new EmbedBuilder()
       .setDescription(
