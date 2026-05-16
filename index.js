@@ -34,6 +34,11 @@ function getTicketBotId(guildId) {
   return config[guildId]?.ticketBotId ?? null;
 }
 
+function getPrefix(guildId) {
+  const config = loadConfig();
+  return config[guildId]?.prefix ?? DEFAULT_PREFIX;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -45,7 +50,7 @@ const client = new Client({
   ],
 });
 
-const PREFIX = "$";
+const DEFAULT_PREFIX = "$";
 const DEV_ID = "1265799891607879853";
 const STAFF_ROLES = ["1503067696017834124", "1503068138080829440"];
 const LOG_CHANNEL_ID = "1478979915851235361";
@@ -117,9 +122,10 @@ async function ask(channel, userId, question, timeout = 60000) {
 
 // ─── Message handler ──────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+  const prefix = message.guild ? getPrefix(message.guild.id) : DEFAULT_PREFIX;
+  if (message.author.bot || !message.content.startsWith(prefix)) return;
 
-  const args = message.content.slice(PREFIX.length).trim().split(/ +/);
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
   // ── $ping ──────────────────────────────────────────────────────────────────
@@ -228,6 +234,42 @@ client.on("messageCreate", async (message) => {
       console.error(err);
       message.reply("something went wrong while deleting invites.");
     }
+  }
+
+  // ── $prefix ────────────────────────────────────────────────────────────────
+  if (command === "prefix") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return message.reply("you need the **Manage Server** permission to use this.");
+    }
+
+    const newPrefix = args[0];
+    if (!newPrefix) {
+      return message.reply(`the current prefix for this server is \`${prefix}\`. Use \`${prefix}prefix <new prefix>\` to change it.`);
+    }
+
+    if (newPrefix.length > 5) {
+      return message.reply("prefix must be 5 characters or fewer.");
+    }
+
+    if (/\s/.test(newPrefix)) {
+      return message.reply("prefix cannot contain spaces.");
+    }
+
+    const config = loadConfig();
+    if (!config[message.guild.id]) config[message.guild.id] = {};
+    config[message.guild.id].prefix = newPrefix;
+    saveConfig(config);
+
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("✅ Prefix Updated")
+          .setDescription(`Server prefix changed to \`${newPrefix}\``)
+          .setColor(0x57f287)
+          .setFooter({ text: `Example: ${newPrefix}help` })
+          .setTimestamp()
+      ]
+    });
   }
 
   // ── $setup ─────────────────────────────────────────────────────────────────
@@ -435,41 +477,42 @@ client.on("messageCreate", async (message) => {
         {
           name: "👤 Regular",
           value: [
-            "`$ping` — check bot latency",
-            "`$vouch` — send a vouch prompt in the current ticket",
-            "`$inrole <role>` — list all members in a role",
-            "`$ticketcount` — show how many tickets are currently open",
-            "`$rn <name>` — rename the current ticket channel",
-            "`$close` — close and delete the current ticket",
-            "`$remind <@user|id>` — DM a user about their open ticket",
-            "`$wait` — send the standard patience message in a ticket",
-            "`$proof` — ask the user to send screenshot proof of invites",
+            `\`${prefix}ping\` — check bot latency`,
+            `\`${prefix}vouch\` — send a vouch prompt in the current ticket`,
+            `\`${prefix}inrole <role>\` — list all members in a role`,
+            `\`${prefix}ticketcount\` — show how many tickets are currently open`,
+            `\`${prefix}rn <name>\` — rename the current ticket channel`,
+            `\`${prefix}close\` — close and delete the current ticket`,
+            `\`${prefix}remind <@user|id>\` — DM a user about their open ticket`,
+            `\`${prefix}wait\` — send the standard patience message in a ticket`,
+            `\`${prefix}proof\` — ask the user to send screenshot proof of invites`,
           ].join("\n"),
           inline: false,
         },
         {
           name: "⚙️ Admin",
           value: [
-            "`$setup <bot ID>` — set which ticket bot is used on this server",
-            "`$clearinvites` — delete all active server invites",
-            "`$vanitysetup` — set up a vanity status role reward",
-            "`$vanitylist` — view all vanity role configs",
-            "`$vanityremove <number>` — remove a vanity role config by number",
+            `\`${prefix}prefix <prefix>\` — change the bot prefix for this server`,
+            `\`${prefix}setup <bot ID>\` — set which ticket bot is used on this server`,
+            `\`${prefix}clearinvites\` — delete all active server invites`,
+            `\`${prefix}vanitysetup\` — set up a vanity status role reward`,
+            `\`${prefix}vanitylist\` — view all vanity role configs`,
+            `\`${prefix}vanityremove <number>\` — remove a vanity role config by number`,
           ].join("\n"),
           inline: false,
         },
         {
           name: "🛠️ Dev",
           value: [
-            "`$restart` — restart the bot process",
-            "`$reload` — reload the bot (same as restart)",
-            "`$shutdown` — shut the bot down without restarting",
-            "`$eval <code>` — run arbitrary JavaScript code",
+            `\`${prefix}restart\` — restart the bot process`,
+            `\`${prefix}reload\` — reload the bot (same as restart)`,
+            `\`${prefix}shutdown\` — shut the bot down without restarting`,
+            `\`${prefix}eval <code>\` — run arbitrary JavaScript code`,
           ].join("\n"),
           inline: false,
         },
       )
-      .setFooter({ text: `Prefix: ${PREFIX}` });
+      .setFooter({ text: `Prefix: ${prefix}` });
 
     message.channel.send({ embeds: [embed] });
   }
