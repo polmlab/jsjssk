@@ -1,53 +1,77 @@
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
-const fs = require("fs");
-const path = require("path");
+const { Pool } = require("pg");
 
-const VANITY_FILE = path.join(__dirname, "vanity.json");
-const CONFIG_FILE = path.join(__dirname, "config.json");
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-function loadVanity() {
-  try {
-    return JSON.parse(fs.readFileSync(VANITY_FILE, "utf8"));
-  } catch {
-    return {};
-  }
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS guild_config (
+      guild_id TEXT PRIMARY KEY,
+      config_data JSONB NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE IF NOT EXISTS vanity_configs (
+      guild_id TEXT PRIMARY KEY,
+      configs JSONB NOT NULL DEFAULT '[]'
+    );
+  `);
 }
 
-function saveVanity(data) {
-  fs.writeFileSync(VANITY_FILE, JSON.stringify(data, null, 2));
+async function getGuildConfig(guildId) {
+  const res = await pool.query(
+    "SELECT config_data FROM guild_config WHERE guild_id = $1",
+    [guildId]
+  );
+  return res.rows[0]?.config_data ?? {};
 }
 
-function loadConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
-  } catch {
-    return {};
-  }
+async function setGuildConfig(guildId, data) {
+  await pool.query(
+    `INSERT INTO guild_config (guild_id, config_data) VALUES ($1, $2)
+     ON CONFLICT (guild_id) DO UPDATE SET config_data = $2`,
+    [guildId, data]
+  );
 }
 
-function saveConfig(data) {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
+async function getVanityConfigs(guildId) {
+  const res = await pool.query(
+    "SELECT configs FROM vanity_configs WHERE guild_id = $1",
+    [guildId]
+  );
+  return res.rows[0]?.configs ?? [];
 }
 
-function getTicketBotId(guildId) {
-  const config = loadConfig();
-  return config[guildId]?.ticketBotId ?? null;
+async function setVanityConfigs(guildId, configs) {
+  await pool.query(
+    `INSERT INTO vanity_configs (guild_id, configs) VALUES ($1, $2)
+     ON CONFLICT (guild_id) DO UPDATE SET configs = $2`,
+    [guildId, JSON.stringify(configs)]
+  );
 }
 
-function getPrefix(guildId) {
-  const config = loadConfig();
-  return config[guildId]?.prefix ?? DEFAULT_PREFIX;
+async function getTicketBotId(guildId) {
+  const config = await getGuildConfig(guildId);
+  return config.ticketBotId ?? null;
 }
 
-function getStaffRoles(guildId) {
-  const config = loadConfig();
-  const configured = config[guildId]?.staffRoles;
+async function getPrefix(guildId) {
+  const config = await getGuildConfig(guildId);
+  return config.prefix ?? DEFAULT_PREFIX;
+}
+
+async function getStaffRoles(guildId) {
+  const config = await getGuildConfig(guildId);
+  const configured = config.staffRoles;
   return configured && configured.length > 0 ? configured : STAFF_ROLES;
 }
 
-function getVouchChannel(guildId) {
-  const config = loadConfig();
-  return config[guildId]?.vouchChannelId ?? null;
+async function getVouchChannel(guildId) {
+  const config = await getGuildConfig(guildId);
+  return config.vouchChannelId ?? null;
+}
+
+async function isStaff(member) {
+  const roles = await getStaffRoles(member.guild.id);
+  return roles.some(id => member.roles.cache.has(id));
 }
 
 const client = new Client({
@@ -65,10 +89,6 @@ const DEFAULT_PREFIX = "$";
 const DEV_ID = "1265799891607879853";
 const STAFF_ROLES = ["1503067696017834124", "1503068138080829440"];
 const LOG_CHANNEL_ID = "1478979915851235361";
-
-function isStaff(member) {
-  return getStaffRoles(member.guild.id).some(id => member.roles.cache.has(id));
-}
 
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -88,8 +108,7 @@ client.on("presenceUpdate", async (oldPresence, newPresence) => {
     const member = await guild.members.fetch(newPresence.userId).catch(() => null);
     if (!member || member.user.bot) return;
 
-    const vanity = loadVanity();
-    const configs = vanity[guild.id];
+    const configs = await getVanityConfigs(guild.id);
     if (!configs || configs.length === 0) return;
 
     const customActivity = newPresence.activities?.find(a => a.type === 4);
@@ -133,7 +152,7 @@ async function ask(channel, userId, question, timeout = 60000) {
 
 // ─── Message handler ──────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
-  const prefix = message.guild ? getPrefix(message.guild.id) : DEFAULT_PREFIX;
+  const prefix = message.guild ? await getPrefix(message.guild.id) : DEFAULT_PREFIX;
   if (message.author.bot || !message.content.startsWith(prefix)) return;
 
   const args = message.content.slice(prefix.length).trim().split(/ +/);
@@ -148,9 +167,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $vouch ─────────────────────────────────────────────────────────────────
   if (command === "vouch") {
-    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const vouchChannelId = getVouchChannel(message.guild.id);
+    const vouchChannelId = await getVouchChannel(message.guild.id);
     if (!vouchChannelId) {
       return message.reply(`no vouch channel configured for this server. An admin must run \`${prefix}vouchchannel <#channel>\` first.`);
     }
@@ -261,7 +280,7 @@ client.on("messageCreate", async (message) => {
 
     const input = args[0];
     if (!input) {
-      const currentId = getVouchChannel(message.guild.id);
+      const currentId = await getVouchChannel(message.guild.id);
       const current = currentId
         ? `Currently configured vouch channel: <#${currentId}>`
         : "No vouch channel configured yet.";
@@ -280,10 +299,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("couldn't find that channel in this server.");
     }
 
-    const config = loadConfig();
-    if (!config[message.guild.id]) config[message.guild.id] = {};
-    config[message.guild.id].vouchChannelId = channelId;
-    saveConfig(config);
+    const guildConfig = await getGuildConfig(message.guild.id);
+    guildConfig.vouchChannelId = channelId;
+    await setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
@@ -291,7 +309,7 @@ client.on("messageCreate", async (message) => {
           .setTitle("✅ Vouch Channel Set")
           .setDescription(`Vouch channel set to <#${channelId}> for this server.`)
           .setColor(0x57f287)
-          .setFooter({ text: "This channel will be used in $vouch and $wait messages." })
+          .setFooter({ text: "This channel will be used in vouch and wait messages." })
           .setTimestamp()
       ]
     });
@@ -304,9 +322,8 @@ client.on("messageCreate", async (message) => {
     }
 
     const sub = args[0]?.toLowerCase();
-    const config = loadConfig();
-    if (!config[message.guild.id]) config[message.guild.id] = {};
-    const current = config[message.guild.id].staffRoles ?? [];
+    const guildConfig = await getGuildConfig(message.guild.id);
+    const current = guildConfig.staffRoles ?? [];
 
     if (!sub || sub === "list") {
       if (current.length === 0) {
@@ -342,8 +359,8 @@ client.on("messageCreate", async (message) => {
         }
       }
 
-      config[message.guild.id].staffRoles = current;
-      saveConfig(config);
+      guildConfig.staffRoles = current;
+      await setGuildConfig(message.guild.id, guildConfig);
 
       return message.reply({
         embeds: [
@@ -367,8 +384,8 @@ client.on("messageCreate", async (message) => {
       const updated = current.filter(id => !mentioned.includes(id));
       const removedCount = before - updated.length;
 
-      config[message.guild.id].staffRoles = updated;
-      saveConfig(config);
+      guildConfig.staffRoles = updated;
+      await setGuildConfig(message.guild.id, guildConfig);
 
       return message.reply({
         embeds: [
@@ -385,8 +402,8 @@ client.on("messageCreate", async (message) => {
     }
 
     if (sub === "clear") {
-      config[message.guild.id].staffRoles = [];
-      saveConfig(config);
+      guildConfig.staffRoles = [];
+      await setGuildConfig(message.guild.id, guildConfig);
       return message.reply({
         embeds: [
           new EmbedBuilder()
@@ -419,10 +436,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("prefix cannot contain spaces.");
     }
 
-    const config = loadConfig();
-    if (!config[message.guild.id]) config[message.guild.id] = {};
-    config[message.guild.id].prefix = newPrefix;
-    saveConfig(config);
+    const guildConfig = await getGuildConfig(message.guild.id);
+    guildConfig.prefix = newPrefix;
+    await setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
@@ -444,12 +460,12 @@ client.on("messageCreate", async (message) => {
 
     const input = args[0];
     if (!input) {
-      const currentId = getTicketBotId(message.guild.id);
+      const currentId = await getTicketBotId(message.guild.id);
       const current = currentId
         ? `Currently configured ticket bot: <@${currentId}> (\`${currentId}\`)`
         : "No ticket bot configured yet.";
       return message.reply(
-        `${current}\n\nUsage: \`$setup <bot ID or @mention>\` — set the ticket bot for this server.`
+        `${current}\n\nUsage: \`${prefix}setup <bot ID or @mention>\` — set the ticket bot for this server.`
       );
     }
 
@@ -460,10 +476,9 @@ client.on("messageCreate", async (message) => {
       return message.reply("invalid bot ID. Please provide a valid Discord user/bot ID or mention.");
     }
 
-    const config = loadConfig();
-    if (!config[message.guild.id]) config[message.guild.id] = {};
-    config[message.guild.id].ticketBotId = botId;
-    saveConfig(config);
+    const guildConfig = await getGuildConfig(message.guild.id);
+    guildConfig.ticketBotId = botId;
+    await setGuildConfig(message.guild.id, guildConfig);
 
     return message.reply({
       embeds: [
@@ -479,11 +494,11 @@ client.on("messageCreate", async (message) => {
 
   // ── $rn ────────────────────────────────────────────────────────────────────
   if (command === "rn") {
-    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = getTicketBotId(message.guild.id);
+    const ticketBotId = await getTicketBotId(message.guild.id);
     if (!ticketBotId) {
-      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+      return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
@@ -522,11 +537,11 @@ client.on("messageCreate", async (message) => {
 
   // ── $close ─────────────────────────────────────────────────────────────────
   if (command === "close") {
-    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = getTicketBotId(message.guild.id);
+    const ticketBotId = await getTicketBotId(message.guild.id);
     if (!ticketBotId) {
-      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+      return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
@@ -558,11 +573,11 @@ client.on("messageCreate", async (message) => {
 
   // ── $remind ────────────────────────────────────────────────────────────────
   if (command === "remind") {
-    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = getTicketBotId(message.guild.id);
+    const ticketBotId = await getTicketBotId(message.guild.id);
     if (!ticketBotId) {
-      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+      return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
@@ -586,11 +601,11 @@ client.on("messageCreate", async (message) => {
 
   // ── $proof ─────────────────────────────────────────────────────────────────
   if (command === "proof") {
-    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = getTicketBotId(message.guild.id);
+    const ticketBotId = await getTicketBotId(message.guild.id);
     if (!ticketBotId) {
-      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+      return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
@@ -609,17 +624,17 @@ client.on("messageCreate", async (message) => {
 
   // ── $wait ──────────────────────────────────────────────────────────────────
   if (command === "wait") {
-    if (!isStaff(message.member)) return message.reply("you don't have permission to use this.");
+    if (!await isStaff(message.member)) return message.reply("you don't have permission to use this.");
 
-    const ticketBotId = getTicketBotId(message.guild.id);
+    const ticketBotId = await getTicketBotId(message.guild.id);
     if (!ticketBotId) {
-      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+      return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const isTicket = message.channel.permissionOverwrites?.cache.has(ticketBotId);
     if (!isTicket) return message.reply("not a ticket.");
 
-    const vouchChannelId = getVouchChannel(message.guild.id);
+    const vouchChannelId = await getVouchChannel(message.guild.id);
     const vouchRef = vouchChannelId ? `<#${vouchChannelId}>` : "the vouch channel";
 
     const embed = new EmbedBuilder()
@@ -688,9 +703,9 @@ client.on("messageCreate", async (message) => {
 
   // ── $ticketcount ───────────────────────────────────────────────────────────
   if (command === "ticketcount") {
-    const ticketBotId = getTicketBotId(message.guild.id);
+    const ticketBotId = await getTicketBotId(message.guild.id);
     if (!ticketBotId) {
-      return message.reply("no ticket bot configured for this server. An admin must run `$setup <bot ID>` first.");
+      return message.reply(`no ticket bot configured for this server. An admin must run \`${prefix}setup <bot ID>\` first.`);
     }
 
     const ticketChannels = message.guild.channels.cache.filter(
@@ -710,25 +725,21 @@ client.on("messageCreate", async (message) => {
   // ── DEV ONLY ───────────────────────────────────────────────────────────────
   if (message.author.id === DEV_ID) {
 
-    // $restart — exits the process so the host restarts it
     if (command === "restart") {
       await message.reply("🔄 Restarting...");
       process.exit(0);
     }
 
-    // $reload — same as restart for a single-file bot
     if (command === "reload") {
       await message.reply("🔃 Reloading bot...");
       process.exit(0);
     }
 
-    // $shutdown — shuts down without restart
     if (command === "shutdown") {
       await message.reply("🛑 Shutting down...");
       process.exit(1);
     }
 
-    // $eval — evaluate arbitrary JS (dev only, dangerous)
     if (command === "eval") {
       const code = args.join(" ");
       if (!code) return message.reply("provide code to evaluate.");
@@ -764,7 +775,6 @@ client.on("messageCreate", async (message) => {
         .setColor(0x5865f2)
     ]});
 
-    // Step 1: texts
     const textMsg = await ask(
       ch, userId,
       "**Step 1/3 — Status text(s)**\nWhat text(s) should be in the member's custom status? " +
@@ -776,7 +786,6 @@ client.on("messageCreate", async (message) => {
     const texts = textMsg.content.split(",").map(t => t.trim()).filter(Boolean);
     if (texts.length === 0) return ch.send("❌ No valid texts provided. Setup cancelled.");
 
-    // Step 2: match type
     const matchMsg = await ask(
       ch, userId,
       "**Step 2/3 — Match type**\nShould the status **contain** the text, or must it be an **exact** match?\n" +
@@ -789,7 +798,6 @@ client.on("messageCreate", async (message) => {
     if (!["contains", "exact"].includes(matchType))
       return ch.send("❌ Invalid match type. Please reply with `contains` or `exact`. Setup cancelled.");
 
-    // Step 3: roles
     const roleMsg = await ask(
       ch, userId,
       "**Step 3/3 — Role(s) to give**\nMention the role(s) to assign when the status matches. " +
@@ -817,10 +825,9 @@ client.on("messageCreate", async (message) => {
     if (validRoles.length === 0)
       return ch.send("❌ None of the roles could be managed by the bot. Make sure the bot's role is above the target roles.");
 
-    const vanity = loadVanity();
-    if (!vanity[message.guild.id]) vanity[message.guild.id] = [];
-    vanity[message.guild.id].push({ texts, matchType, roles: validRoles });
-    saveVanity(vanity);
+    const configs = await getVanityConfigs(message.guild.id);
+    configs.push({ texts, matchType, roles: validRoles });
+    await setVanityConfigs(message.guild.id, configs);
 
     const roleNames = validRoles.map(id => `<@&${id}>`).join(", ");
     const textList = texts.map(t => `\`${t}\``).join(", ");
@@ -845,11 +852,10 @@ client.on("messageCreate", async (message) => {
       return message.reply("you need the **Manage Roles** permission to use this.");
     }
 
-    const vanity = loadVanity();
-    const configs = vanity[message.guild.id];
+    const configs = await getVanityConfigs(message.guild.id);
 
     if (!configs || configs.length === 0)
-      return message.reply("no vanity configs set up for this server. Use `$vanitysetup` to create one.");
+      return message.reply(`no vanity configs set up for this server. Use \`${prefix}vanitysetup\` to create one.`);
 
     const embed = new EmbedBuilder()
       .setTitle("🎀 Vanity Role Configs")
@@ -866,7 +872,7 @@ client.on("messageCreate", async (message) => {
       });
     });
 
-    embed.setFooter({ text: "Use $vanityremove <number> to remove a config." });
+    embed.setFooter({ text: `Use ${prefix}vanityremove <number> to remove a config.` });
     message.channel.send({ embeds: [embed] });
   }
 
@@ -877,22 +883,25 @@ client.on("messageCreate", async (message) => {
     }
 
     const index = parseInt(args[0], 10) - 1;
-    const vanity = loadVanity();
-    const configs = vanity[message.guild.id];
+    const configs = await getVanityConfigs(message.guild.id);
 
     if (!configs || configs.length === 0)
       return message.reply("no vanity configs to remove.");
 
     if (isNaN(index) || index < 0 || index >= configs.length)
-      return message.reply(`please provide a valid config number between 1 and ${configs.length}. Use \`$vanitylist\` to see them.`);
+      return message.reply(`please provide a valid config number between 1 and ${configs.length}. Use \`${prefix}vanitylist\` to see them.`);
 
     const removed = configs.splice(index, 1)[0];
-    vanity[message.guild.id] = configs;
-    saveVanity(vanity);
+    await setVanityConfigs(message.guild.id, configs);
 
     const textList = removed.texts.map(t => `\`${t}\``).join(", ");
     message.reply(`✅ Removed config #${index + 1} (${textList}).`);
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+initDb()
+  .then(() => client.login(process.env.DISCORD_TOKEN))
+  .catch(err => {
+    console.error("Failed to initialize database:", err.message);
+    process.exit(1);
+  });
