@@ -1,6 +1,15 @@
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
+const express = require("express");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => res.send("Bot is running."));
+app.get("/ping", (req, res) => res.send("pong"));
+
+app.listen(PORT, () => console.log(`HTTP server listening on port ${PORT}`));
 
 const GUILD_CONFIG_FILE = path.join(__dirname, "guild_config.json");
 const VANITY_CONFIG_FILE = path.join(__dirname, "vanity_configs.json");
